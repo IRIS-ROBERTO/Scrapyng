@@ -14,6 +14,15 @@ interface SearchResult {
   [key: string]: string | number | boolean | null
 }
 
+interface FlightMeta {
+  total: number
+  cheapest_price: number | null
+  cheapest_destination: string | null
+  cheapest_date: string | null
+  has_api_key: boolean
+  message: string
+}
+
 const linkColumns = new Set([
   'url',
   'link',
@@ -25,6 +34,7 @@ const linkColumns = new Set([
   'buy_url',
   'comprar',
   'link_passagem',
+  'link_compra',
 ])
 
 const flightCountries = [
@@ -119,6 +129,11 @@ function getFlightPlaceLabel(countryId: string, citySlug: string) {
   const city = country?.cities.find(item => item.slug === citySlug)
   if (city && country) return `${city.label}, ${country.label}`
   return country?.label || ''
+}
+
+function getCityLabel(countryId: string, citySlug: string): string {
+  const country = getFlightCountry(countryId)
+  return country?.cities.find(c => c.slug === citySlug)?.label || ''
 }
 
 function buildFlightSearchUrl(form: {
@@ -217,7 +232,11 @@ const searchTypes = [
   },
 ]
 
-function FlightForm({ onResults }: { onResults: (r: SearchResult[]) => void }) {
+function FlightForm({
+  onFlightResults,
+}: {
+  onFlightResults: (meta: FlightMeta, results: SearchResult[]) => void
+}) {
   const [loading, setLoading] = useState(false)
   const [scheduling, setScheduling] = useState(false)
   const [form, setForm] = useState<FlightFormState>({
@@ -240,46 +259,44 @@ function FlightForm({ onResults }: { onResults: (r: SearchResult[]) => void }) {
     e.preventDefault()
     setLoading(true)
     try {
+      const originCityLabel = getCityLabel(form.originCountry, form.originCity)
+      const destCityLabel = form.destinationCity
+        ? getCityLabel(form.destinationCountry, form.destinationCity)
+        : ''
+      const destCountryLabel = destinationCountry?.label || form.destinationCountry.toUpperCase()
+
       const response = await searchApi.searchFlights({
         origin: originLabel,
         destination: destinationLabel,
         departure_date: form.departure_date,
-        return_date: form.return_date,
+        return_date: form.return_date || undefined,
         passengers: Number(form.passengers),
+        origin_city: originCityLabel,
+        destination_country: destCountryLabel,
+        destination_city: destCityLabel,
+        date_flexibility_days: 3,
       })
-      const googleFlightsUrl = buildFlightSearchUrl(form)
-      const results = (response.data.results || []).map((result: SearchResult) => ({
-        ...result,
-        origem: result.origem || originLabel,
-        destino: result.destino || destinationLabel,
-        ida: result.ida || form.departure_date,
-        volta: result.volta || form.return_date || 'Somente ida',
-        passageiros: result.passageiros || Number(form.passengers),
-        escopo: result.escopo || destinationScope,
-        fonte: result.fonte || 'Google Flights',
-        status_verificacao: result.status_verificacao || 'Verificar na fonte antes da compra',
-        link_passagem: googleFlightsUrl,
-        verificar: googleFlightsUrl,
-        comprar: googleFlightsUrl,
-      }))
-      onResults(sortFlightsByPrice(results))
-    } catch {
-      const googleFlightsUrl = buildFlightSearchUrl(form)
-      onResults([{
-        origem: originLabel,
-        destino: destinationLabel,
-        ida: form.departure_date,
-        volta: form.return_date || 'Somente ida',
-        passageiros: Number(form.passengers),
-        preco: 'Pendente',
-        status_verificacao: 'Abrir Google Flights para confirmar preco e disponibilidade',
-        escopo: destinationScope,
-        fonte: 'Google Flights',
-        link_passagem: googleFlightsUrl,
-        verificar: googleFlightsUrl,
-        comprar: googleFlightsUrl,
-      }])
-      toast.error('Preco nao confirmado automaticamente. Abra o Google Flights para validar antes da compra.')
+
+      const data = response.data as FlightMeta & { results: SearchResult[] }
+      const sorted = sortFlightsByPrice(data.results || [])
+      onFlightResults(
+        {
+          total: data.total ?? sorted.length,
+          cheapest_price: data.cheapest_price ?? null,
+          cheapest_destination: data.cheapest_destination ?? null,
+          cheapest_date: data.cheapest_date ?? null,
+          has_api_key: data.has_api_key ?? false,
+          message: data.message ?? '',
+        },
+        sorted,
+      )
+
+      if (sorted.length === 0) {
+        toast('Nenhum voo encontrado para os parametros informados.', { icon: 'ℹ️' })
+      }
+    } catch (err) {
+      console.error(err)
+      toast.error('Erro ao buscar voos. Verifique os logs do backend.')
     } finally {
       setLoading(false)
     }
@@ -296,7 +313,7 @@ function FlightForm({ onResults }: { onResults: (r: SearchResult[]) => void }) {
         extraction_type: 'ai',
         engine: 'playwright',
         use_playwright: true,
-        fields: ['companhia', 'voo', 'saida', 'chegada', 'duracao', 'preco', 'escalas', 'status_verificacao', 'link_passagem'],
+        fields: ['companhia', 'voo', 'saida', 'chegada', 'duracao', 'preco', 'escalas', 'link_compra'],
         frequency: form.scheduleFrequency,
         cron_expression: form.scheduleFrequency === 'weekly' ? '0 8 * * 1' : '0 8 * * *',
         search_type: 'flights',
@@ -390,7 +407,9 @@ function FlightForm({ onResults }: { onResults: (r: SearchResult[]) => void }) {
             ))}
           </select>
           <p className="mt-1 text-[11px] text-muted">
-            {form.destinationCity ? `Busca somente ${destinationLabel}` : `Busca oportunidades em qualquer cidade de ${destinationCountry?.label || 'destino'}`}
+            {form.destinationCity
+              ? `Busca somente ${destinationLabel}`
+              : `Busca oportunidades em qualquer cidade de ${destinationCountry?.label || 'destino'}`}
           </p>
         </div>
         {field('Data de Ida', 'departure_date', 'date')}
@@ -398,13 +417,14 @@ function FlightForm({ onResults }: { onResults: (r: SearchResult[]) => void }) {
       </div>
       <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
         <div>
-        <label className="block text-xs font-medium text-foreground mb-1.5">Passageiros</label>
-        <input type="number" min={1} max={9} value={form.passengers}
-          onChange={e => setForm(p => ({ ...p, passengers: Number(e.target.value) }))}
-          className="w-32 bg-surface border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-primary transition-colors" />
+          <label className="block text-xs font-medium text-foreground mb-1.5">Passageiros</label>
+          <input type="number" min={1} max={9} value={form.passengers}
+            onChange={e => setForm(p => ({ ...p, passengers: Number(e.target.value) }))}
+            className="w-32 bg-surface border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-primary transition-colors" />
         </div>
         <p className="max-w-3xl text-xs text-muted">
-          Para compra real, a plataforma so mostra preco confirmado quando a API retornar cotacao validada. Sem confirmacao, abrimos a verificacao direto na fonte.
+          Busca em ate 15 aeroportos dos EUA simultaneamente com flexibilidade de +/- 3 dias.
+          Resultados ranqueados por preco (menor para maior).
         </p>
       </div>
       <Button type="submit" loading={loading} className="w-full">
@@ -424,6 +444,144 @@ function FlightForm({ onResults }: { onResults: (r: SearchResult[]) => void }) {
         </Button>
       </div>
     </form>
+  )
+}
+
+function FlightResults({ meta, results }: { meta: FlightMeta; results: SearchResult[] }) {
+  if (!results.length) return null
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-3 px-1">
+        <Badge variant="success">{meta.total} voo{meta.total !== 1 ? 's' : ''} encontrado{meta.total !== 1 ? 's' : ''}</Badge>
+        {meta.cheapest_price !== null && (
+          <span className="text-sm text-muted">
+            Mais barato:{' '}
+            <span className="text-foreground font-bold text-primary">
+              R$ {meta.cheapest_price.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </span>
+            {meta.cheapest_destination && ` · ${meta.cheapest_destination}`}
+            {meta.cheapest_date && ` · ${meta.cheapest_date}`}
+          </span>
+        )}
+        {!meta.has_api_key && (
+          <Badge variant="warning" className="text-[10px]">Sem chave Amadeus — dados via scraper</Badge>
+        )}
+      </div>
+      <p className="text-xs text-muted px-1">{meta.message}</p>
+
+      <div className="w-full overflow-x-auto">
+        <table className="min-w-full text-sm">
+          <thead className="border-b border-border">
+            <tr>
+              <th className="text-left text-xs text-muted font-medium px-3 py-3 w-8">#</th>
+              <th className="text-left text-xs text-muted font-medium px-3 py-3">Companhia</th>
+              <th className="text-left text-xs text-muted font-medium px-3 py-3">Rota</th>
+              <th className="text-left text-xs text-muted font-medium px-3 py-3">Saida</th>
+              <th className="text-left text-xs text-muted font-medium px-3 py-3">Chegada</th>
+              <th className="text-left text-xs text-muted font-medium px-3 py-3">Duracao</th>
+              <th className="text-center text-xs text-muted font-medium px-3 py-3">Escalas</th>
+              <th className="text-left text-xs text-muted font-medium px-3 py-3">Data ida</th>
+              <th className="text-right text-xs text-muted font-medium px-3 py-3">Preco (BRL)</th>
+              <th className="text-right text-xs text-muted font-medium px-3 py-3 min-w-[110px]">Acao</th>
+            </tr>
+          </thead>
+          <tbody>
+            {results.map((row, i) => {
+              const price = parsePrice(row.preco ?? row.price ?? null)
+              const isFinitePrice = Number.isFinite(price)
+              const diffDays = typeof row.diferenca_dias === 'number' ? row.diferenca_dias : null
+              const linkCompra = String(row.link_compra || row.link_passagem || row.comprar || '')
+              const escalas = typeof row.escalas === 'number' ? row.escalas : null
+
+              return (
+                <tr
+                  key={i}
+                  className={`border-b border-border last:border-0 transition-colors ${
+                    i === 0 ? 'bg-primary/5' : 'hover:bg-surface-2/40'
+                  }`}
+                >
+                  <td className="px-3 py-3 text-xs text-muted align-middle">{i + 1}</td>
+                  <td className="px-3 py-3 align-middle">
+                    <div className="flex flex-col gap-0.5">
+                      {i === 0 && (
+                        <Badge variant="success" className="text-[10px] py-0 px-1.5 w-fit mb-0.5">
+                          Mais barato
+                        </Badge>
+                      )}
+                      <span className="text-xs text-foreground font-medium">{String(row.companhia || '—')}</span>
+                      <span className="text-[10px] text-muted">{String(row.numero_voo || '')}</span>
+                    </div>
+                  </td>
+                  <td className="px-3 py-3 align-middle">
+                    <span className="text-xs text-foreground font-medium">
+                      {String(row.origem_iata || row.origem || '—')} → {String(row.destino_iata || row.destino || '—')}
+                    </span>
+                    <div className="text-[10px] text-muted mt-0.5">
+                      {[String(row.origem_cidade || ''), String(row.destino_cidade || '')].filter(Boolean).join(' → ')}
+                    </div>
+                  </td>
+                  <td className="px-3 py-3 text-xs text-foreground whitespace-nowrap align-middle">
+                    {String(row.saida || '—')}
+                  </td>
+                  <td className="px-3 py-3 text-xs text-foreground whitespace-nowrap align-middle">
+                    {String(row.chegada || '—')}
+                  </td>
+                  <td className="px-3 py-3 text-xs text-muted whitespace-nowrap align-middle">
+                    {String(row.duracao || '—')}
+                  </td>
+                  <td className="px-3 py-3 text-center align-middle">
+                    {escalas === 0 ? (
+                      <Badge variant="success" className="text-[10px] py-0 px-1.5">Direto</Badge>
+                    ) : escalas !== null ? (
+                      <span className="text-xs text-muted">{escalas}x</span>
+                    ) : (
+                      <span className="text-xs text-muted">—</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-3 align-middle">
+                    <div className="text-xs text-foreground whitespace-nowrap">{String(row.data_ida_real || row.ida || '—')}</div>
+                    {diffDays !== null && diffDays !== 0 && (
+                      <span
+                        className={`inline-block mt-0.5 text-[10px] px-1 rounded font-medium ${
+                          diffDays > 0 ? 'bg-warning/20 text-warning' : 'bg-secondary/20 text-secondary'
+                        }`}
+                      >
+                        {diffDays > 0 ? `+${diffDays}d` : `${diffDays}d`}
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-3 py-3 text-right align-middle">
+                    <span
+                      className={`text-sm font-bold ${i === 0 ? 'text-primary' : 'text-foreground'}`}
+                    >
+                      {isFinitePrice
+                        ? `R$ ${price.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                        : String(row.preco || '—')}
+                    </span>
+                    <div className="text-[10px] text-muted mt-0.5">{String(row.fonte || '')}</div>
+                  </td>
+                  <td className="px-3 py-3 text-right align-middle">
+                    {linkCompra ? (
+                      <a
+                        href={linkCompra}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-white transition-colors hover:bg-primary/90"
+                      >
+                        <ShoppingCart className="h-3.5 w-3.5" />
+                        Comprar
+                        <ExternalLink className="h-3 w-3" />
+                      </a>
+                    ) : null}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
   )
 }
 
@@ -676,14 +834,26 @@ function ResultsTable({ results }: { results: SearchResult[] }) {
 export default function SearchPage() {
   const [activeSearch, setActiveSearch] = useState<SearchType>(null)
   const [results, setResults] = useState<SearchResult[]>([])
+  const [flightMeta, setFlightMeta] = useState<FlightMeta | null>(null)
 
   const activeConfig = searchTypes.find(s => s.id === activeSearch)
+
+  const handleFlightResults = (meta: FlightMeta, r: SearchResult[]) => {
+    setFlightMeta(meta)
+    setResults(r)
+  }
+
+  const handleReset = () => {
+    setActiveSearch(null)
+    setResults([])
+    setFlightMeta(null)
+  }
 
   if (activeSearch) {
     return (
       <div className="w-full max-w-[1680px] mx-auto space-y-6 animate-slide-up">
         <div className="flex items-center gap-3">
-          <button onClick={() => { setActiveSearch(null); setResults([]) }}
+          <button onClick={handleReset}
             className="p-2 rounded-lg hover:bg-surface-2 text-muted hover:text-foreground transition-colors">
             <ArrowLeft className="w-4 h-4" />
           </button>
@@ -697,7 +867,7 @@ export default function SearchPage() {
 
         <Card>
           <CardContent className="p-5">
-            {activeSearch === 'flights' && <FlightForm onResults={setResults} />}
+            {activeSearch === 'flights' && <FlightForm onFlightResults={handleFlightResults} />}
             {activeSearch === 'news' && <NewsForm onResults={setResults} />}
             {activeSearch === 'leads' && <LeadsForm onResults={setResults} />}
             {activeSearch === 'jobs' && <JobsForm onResults={setResults} />}
@@ -712,8 +882,12 @@ export default function SearchPage() {
                 <Badge variant="success">{results.length} encontrados</Badge>
               </div>
             </CardHeader>
-            <CardContent className="p-0">
-              <ResultsTable results={results} />
+            <CardContent className={activeSearch === 'flights' ? 'p-4' : 'p-0'}>
+              {activeSearch === 'flights' && flightMeta ? (
+                <FlightResults meta={flightMeta} results={results} />
+              ) : (
+                <ResultsTable results={results} />
+              )}
             </CardContent>
           </Card>
         )}

@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     CELERY_RESULT_BACKEND: str = "redis://redis:6379/2"
 
     # ── Application ───────────────────────────────────────────────────────
+    # ── Amadeus Flight API (gratuito em developers.amadeus.com) ──────────────
+    AMADEUS_API_KEY: str = ""
+    AMADEUS_API_SECRET: str = ""
+
     APP_ENV: str = "development"
     FRONTEND_URL: str = "http://localhost:3000"
 

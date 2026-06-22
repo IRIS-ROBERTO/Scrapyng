@@ -104,6 +104,10 @@ export const searchApi = {
     departure_date: string
     return_date?: string
     passengers: number
+    destination_country?: string
+    destination_city?: string
+    origin_city?: string
+    date_flexibility_days?: number
   }) => api.post('/search/flights', params),
 
   searchNews: (params: {
